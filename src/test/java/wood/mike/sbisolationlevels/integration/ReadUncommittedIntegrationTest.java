@@ -20,8 +20,8 @@ public class ReadUncommittedIntegrationTest extends BaseIntegrationTest {
 
     @BeforeEach
     void setup() {
+        // the writer template's isolation is not relevant and can stay as default
         writerTemplate = new TransactionTemplate(transactionManager);
-        writerTemplate.setIsolationLevel(TransactionDefinition.ISOLATION_READ_UNCOMMITTED);
 
         readerTemplate = new TransactionTemplate(transactionManager);
         readerTemplate.setIsolationLevel(TransactionDefinition.ISOLATION_READ_UNCOMMITTED);
