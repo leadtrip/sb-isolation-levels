@@ -1,4 +1,7 @@
 package wood.mike.sbisolationlevels.repository;
 
-public class PersonRepository {
+import org.springframework.data.jpa.repository.JpaRepository;
+import wood.mike.sbisolationlevels.model.Person;
+
+public interface PersonRepository extends JpaRepository<Person, Long> {
 }
