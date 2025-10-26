@@ -13,6 +13,13 @@ import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+/**
+ * In this test we set the isolation level on the reader thread/transaction to ISOLATION_READ_UNCOMMITTED.
+ * Here, dirty reads, non-repeatable reads, and phantom reads can occur.
+ * This level allows a row changed by one transaction to be read by another transaction before any changes in that row
+ * have been committed (a "dirty read").
+ * If any of the changes are rolled back, the second transaction will have retrieved an invalid row.
+ */
 public class ReadUncommittedIntegrationTest extends BaseIntegrationTest {
 
     private TransactionTemplate writerTemplate;

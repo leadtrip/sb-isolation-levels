@@ -16,11 +16,13 @@ import java.util.concurrent.TimeUnit;
 import static org.assertj.core.api.AssertionsForClassTypes.assertThat;
 
 /**
- * In this test we set the isolation level on the reader thread/transaction to ISOLATION_READ_COMMITTED.
- * Here, dirty reads are prevented; non-repeatable reads and phantom reads can occur.
- * This level only prohibits a transaction from reading a row with uncommitted changes in it.
+ * In this test we set the isolation level on the reader thread/transaction to ISOLATION_REPEATABLE_READ.
+ * Here, dirty reads and non-repeatable reads are prevented; phantom reads can occur.
+ * This level prohibits a transaction from reading a row with uncommitted changes in it,
+ * and it also prohibits the situation where one transaction reads a row, a second transaction alters the row,
+ * and the first transaction re-reads the row, getting different values the second time (a "non-repeatable read").
  */
-public class ReadCommittedIntegrationTest extends BaseIntegrationTest {
+public class RepeatableReadIntegrationTest extends BaseIntegrationTest {
 
     private TransactionTemplate writerTemplate;
     private TransactionTemplate readerTemplate;
@@ -31,32 +33,30 @@ public class ReadCommittedIntegrationTest extends BaseIntegrationTest {
         writerTemplate = new TransactionTemplate(transactionManager);
 
         readerTemplate = new TransactionTemplate(transactionManager);
-        readerTemplate.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
+        readerTemplate.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
     }
 
     @Test
-    void testNonRepeatableReadOccurs_ReadCommitted() throws Exception {
-        System.out.println("\n--- Starting Non-Repeatable Read Test (READ_COMMITTED) ---");
+    void testNonRepeatableReadPrevented_RepeatableRead() throws Exception {
+        System.out.println("\n--- Starting REPEATABLE_READ Test ---");
 
         // Latch 1: Tx A waits after its FIRST read.
         CountDownLatch read1Latch = new CountDownLatch(1);
         // Latch 2: Tx B waits after its COMMIT.
         CountDownLatch commitLatch = new CountDownLatch(1);
 
-
         // 1. Transaction A (The Reader) - Runs in a separate thread
         Future<List<String>> readerFuture = Executors.newSingleThreadExecutor().submit(() -> {
             return readerTemplate.execute(status -> {
                 try {
-                    // List to store the two reads
                     List<String> reads = new ArrayList<>();
 
-                    System.out.println("Tx A: Starting READ_COMMITTED transaction.");
+                    System.out.println("Tx A: Starting REPEATABLE_READ transaction.");
 
                     // FIRST READ (Should see INITIAL_NAME)
-                    String name1 = personRepository.findById(BOB_ID).orElseThrow().getForename();
-                    reads.add(name1);
-                    System.out.println("Tx A: First read: " + name1);
+                    Person person1 = personRepository.findById(BOB_ID).orElseThrow();
+                    reads.add(person1.getForename());
+                    System.out.println("Tx A: First read: " + person1.getForename());
 
                     // Signal the writer (Tx B) to perform and commit its change
                     read1Latch.countDown();
@@ -64,33 +64,29 @@ public class ReadCommittedIntegrationTest extends BaseIntegrationTest {
                     // Wait for the writer (Tx B) to commit its change
                     commitLatch.await();
 
-                    // Explicitly refresh the entity to bypass L1 cache
-                    Person person = personRepository.findById(BOB_ID).orElseThrow();
-                    entityManager.refresh(person); // Forces a database re-read
+                    // Force cache refresh before second read
+                    entityManager.clear(); // Clear L1 cache
 
-                    // SECOND READ (This is where the anomaly occurs)
-                    String name2 = person.getForename(); // Get the name from the refreshed entity
-                    reads.add(name2);
-                    System.out.println("Tx A: Second read: " + name2);
+                    // SECOND READ (This is where the anomaly is PREVENTED)
+                    Person person2 = personRepository.findById(BOB_ID).orElseThrow();
+                    reads.add(person2.getForename());
+                    System.out.println("Tx A: Second read: " + person2.getForename());
 
                     return reads;
                 } catch (Exception e) {
-                    e.printStackTrace();
-                    status.setRollbackOnly(); // Rollback on error
                     return List.of("ERROR");
                 }
             });
         });
 
-        // 2. Transaction B (The Writer) - Runs in the main thread's explicit transaction
-        read1Latch.await(5, TimeUnit.SECONDS); // Wait for Tx A to complete its first read.
+        // 2. Transaction B (The Writer) - Runs in the main thread (uses default/lower isolation)
+        read1Latch.await(5, TimeUnit.SECONDS); // Wait for Tx A's first read.
 
         writerTemplate.executeWithoutResult(status -> {
-            // Update the name
             Person person = personRepository.findById(BOB_ID).orElseThrow();
             person.setForename(NEW_NAME);
             personRepository.saveAndFlush(person);
-            // This transaction will commit automatically when executeWithoutResult finishes
+            // Transaction B commits here.
         });
 
         System.out.println("Tx B: Updated name and COMMITTED: " + NEW_NAME);
@@ -105,12 +101,12 @@ public class ReadCommittedIntegrationTest extends BaseIntegrationTest {
                 .as("Tx A's first read should see the initial committed value.")
                 .isEqualTo(ORIGINAL_NAME);
 
-        // ASSERTION 2: Non-Repeatable Read ANOMALY
-        // In READ_COMMITTED, Tx A should see the change from committed Tx B.
+        // ASSERTION 2: Non-Repeatable Read IS PREVENTED
+        // In REPEATABLE_READ, Tx A must NOT see the change committed by Tx B.
         assertThat(results.get(1))
-                .as("In READ_COMMITTED, Tx A should see Tx B's committed change on the second read.")
-                .isEqualTo(NEW_NAME);
+                .as("In REPEATABLE_READ, Tx A must NOT see Tx B's committed change; the read must be stable.")
+                .isEqualTo(ORIGINAL_NAME); // Expect the original value!
 
-        System.out.println("--- Test Complete: Non-Repeatable Read Confirmed ---");
+        System.out.println("--- Test Complete: Non-Repeatable Read Prevented ---");
     }
 }
